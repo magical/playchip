@@ -1,4 +1,7 @@
-"""playchip - play chip's challenge levels"""
+"""playchip - play chip's challenge levels
+
+
+"""
 
 import struct
 import os
@@ -35,9 +38,15 @@ DAT_OFFSET = 0x4AD4
 ENDLEVEL_OFFSETS = [0x91c0, 0xba14, 0xbb1c]
 FAKEENDLEVEL_OFFSETS = [0x91b9, 0xbb14]
 
-DECADE_OFFSET = 0xbb2b
+CREDITSLEVEL_OFFSETS = [
+    0x9f85, #don't ignore passwords if current level is this level
+    0xa6d9, #don't ignore passwords when jumping to this level
+]
 
+DECADE_OFFSET = 0xbb2b
 DECADE_VALUES = ('\xd1', '\xd2') # off, on
+
+SOUND_OFFSET = 0x2f2f
 
 class DocStrMixin(object):
     def __str__(self):
@@ -93,10 +102,14 @@ def patchexe(exepath,
              iniheading=None,
              endlevel=None,
              fakeendlevel=None,
-             decade=None):
+             creditslevel=None,
+             decade=None,
+             soundon=None):
     if fakeendlevel is None:
         fakeendlevel = endlevel
-    
+    if creditslevel is None:
+        creditslevel = fakeendlevel
+
     if datfile is not None and not len(datfile) <= DAT_LENGTH:
         raise StringTooLongError(datfile)
 
@@ -109,8 +122,10 @@ def patchexe(exepath,
     if not 1 <= endlevel <= 999:
         raise ValueError(endlevel)
 
-    if not 1 <= fakeendlevel <= endlevel <= 999:
+    if not 0 <= fakeendlevel <= endlevel <= 999:
         raise ValueError(fakeendlevel)
+    if not (creditslevel == 0 or 1 <= fakeendlevel <= creditslevel <= endlevel <= 999):
+        raise ValueError(creditslevel)
 
     with open(exepath, "r+b") as exe:
         if datfile is not None:
@@ -125,8 +140,18 @@ def patchexe(exepath,
         if fakeendlevel is not None:
             for offset in FAKEENDLEVEL_OFFSETS:
                 writeword(exe, fakeendlevel, offset)
+        if creditslevel is not None:
+            for offset in CREDITSLEVEL_OFFSETS:
+                writeword(exe, creditslevel, offset)
+                if creditslevel > 0:
+                    exe.write("\x7c") # jl
+                else:
+                    exe.write("\x75") # jnz
         if decade is not None:
             patchdecade(exe, decade)
+        if soundon is not None:
+            exe.seek(SOUND_OFFSET)
+            exe.write('\x01' if soundon else '\x00')
 
 def readstring(file, offset, maxlen):
     file.seek(offset)
@@ -157,6 +182,7 @@ def readexe(exepath):
         info['iniheading'] = readstring(exe, HEADING_OFFSET, HEADING_LENGTH)
         info['endlevel'] = [readword(exe, offset) for offset in ENDLEVEL_OFFSETS]
         info['fakeendlevel'] = [readword(exe, offset) for offset in FAKEENDLEVEL_OFFSETS]
+        info['creditslevel'] = [readword(exe, offset) for offset in CREDITSLEVEL_OFFSETS]
         info['decade'] = readdecade(exe)
     return info
 
@@ -190,11 +216,24 @@ def playchip(levelset):
 
     shutil.copy(levelset, appdata(CHIPS_FOLDER, DEFAULT_DAT))
 
+    endlevel = info.count
+    fake = None
+    credits = 0
+    if endlevel == 149:
+        fake = 144
+    if setname.upper() == 'CHIPS.DAT':
+        credits = 145
+
+    
     patchexe(exe,
              inifile=DEFAULT_INI,
-             iniheading=setname,
-             endlevel=info.count,
-             decade=False)
+             iniheading=setname[:HEADING_LENGTH],
+             endlevel=endlevel,
+             fakeendlevel=fake,
+             creditslevel=credits,
+             decade=False,
+             soundon=True
+             )
 
     os.chdir(appdata(CHIPS_FOLDER))
     ret = subprocess.call(exe)
@@ -220,7 +259,8 @@ def initialize(path):
     
     shutil.copy(exe, os.path.join(installdir, 'chips.exe'))
 
-    files = ['wep4util.dll'] + glob.glob('*.wav')
+    files = ['WEP4UTIL.DLL'] + glob.glob('*.WAV')
+    #files += glob.glob('*.MID')
     for fn in files:
         print fn
         shutil.copy(fn, installdir)
